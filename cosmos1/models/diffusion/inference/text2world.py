@@ -122,37 +122,38 @@ def demo(cfg):
         if current_prompt is None:
             log.critical("Prompt is missing, skipping world generation.")
             continue
+        
+        for seed in range(cfg.seed, cfg.seed + cfg.num_seeds):
+            # Generate video
+            generated_output = pipeline.generate(current_prompt, cfg.negative_prompt, cfg.word_limit_to_skip_upsampler)
+            if generated_output is None:
+                log.critical("Guardrail blocked text2world generation.")
+                continue
+            video, prompt = generated_output
 
-        # Generate video
-        generated_output = pipeline.generate(current_prompt, cfg.negative_prompt, cfg.word_limit_to_skip_upsampler)
-        if generated_output is None:
-            log.critical("Guardrail blocked text2world generation.")
-            continue
-        video, prompt = generated_output
+            if cfg.batch_input_path:
+                video_save_path = os.path.join(cfg.video_save_folder, f"{i}-seed{seed}.mp4")
+                prompt_save_path = os.path.join(cfg.video_save_folder, f"{i}-seed{seed}.txt")
+            else:
+                video_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}-seed{seed}.mp4")
+                prompt_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}-seed{seed}.txt")
 
-        if cfg.batch_input_path:
-            video_save_path = os.path.join(cfg.video_save_folder, f"{i}.mp4")
-            prompt_save_path = os.path.join(cfg.video_save_folder, f"{i}.txt")
-        else:
-            video_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}.mp4")
-            prompt_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}.txt")
+            # Save video
+            save_video(
+                video=video,
+                fps=cfg.fps,
+                H=cfg.height,
+                W=cfg.width,
+                video_save_quality=5,
+                video_save_path=video_save_path,
+            )
 
-        # Save video
-        save_video(
-            video=video,
-            fps=cfg.fps,
-            H=cfg.height,
-            W=cfg.width,
-            video_save_quality=5,
-            video_save_path=video_save_path,
-        )
+            # Save prompt to text file alongside video
+            with open(prompt_save_path, "wb") as f:
+                f.write(prompt.encode("utf-8"))
 
-        # Save prompt to text file alongside video
-        with open(prompt_save_path, "wb") as f:
-            f.write(prompt.encode("utf-8"))
-
-        log.info(f"Saved video to {video_save_path}")
-        log.info(f"Saved prompt to {prompt_save_path}")
+            log.info(f"Saved video to {video_save_path}")
+            log.info(f"Saved prompt to {prompt_save_path}")
 
 
 if __name__ == "__main__":

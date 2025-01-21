@@ -116,6 +116,7 @@ def add_common_arguments(parser):
     parser.add_argument("--width", type=int, default=1280, help="Width of video to sample")
     parser.add_argument("--fps", type=int, default=24, help="FPS of the sampled video")
     parser.add_argument("--seed", type=int, default=1, help="Random seed")
+    parser.add_argument("--num_seeds", type=int, default=1, help="Total number of seeds to run")
     parser.add_argument(
         "--disable_prompt_upsampler",
         action="store_true",
