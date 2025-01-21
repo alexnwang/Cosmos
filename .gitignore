@@ -17,6 +17,7 @@ open_singularity
 pytorch_24.10-py3-overlay.img
 pytorch_24.10-py3.sif
 data
+sbatch_dump
 
 # Misc
 outputs/

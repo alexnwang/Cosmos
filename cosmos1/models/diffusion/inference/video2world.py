@@ -151,12 +151,13 @@ def demo(cfg):
                 continue
             video, prompt = generated_output
 
+            visual_input_filename = os.path.basename(current_image_or_video_path).split(".")[0]
             if cfg.batch_input_path:
-                video_save_path = os.path.join(cfg.video_save_folder, f"{i}-seed{seed}.mp4")
-                prompt_save_path = os.path.join(cfg.video_save_folder, f"{i}-seed{seed}.txt")
+                video_save_path = os.path.join(cfg.video_save_folder, f"{i}-seed{seed}-{visual_input_filename}.mp4")
+                prompt_save_path = os.path.join(cfg.video_save_folder, f"{i}-seed{seed}-{visual_input_filename}.txt")
             else:
-                video_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}-seed{seed}.mp4")
-                prompt_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}-seed{seed}.txt")
+                video_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}-seed{seed}-{visual_input_filename}.mp4")
+                prompt_save_path = os.path.join(cfg.video_save_folder, f"{cfg.video_save_name}-seed{seed}-{visual_input_filename}.txt")
 
             # Save video
             save_video(
@@ -171,6 +172,8 @@ def demo(cfg):
             # Save prompt to text file alongside video
             with open(prompt_save_path, "wb") as f:
                 f.write(prompt.encode("utf-8"))
+                f.write(b"\n")
+                f.write(current_image_or_video_path.encode("utf-8"))
 
             log.info(f"Saved video to {video_save_path}")
             log.info(f"Saved prompt to {prompt_save_path}")
