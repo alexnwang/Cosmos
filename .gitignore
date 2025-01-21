@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+open_singularity
+pytorch_24.10-py3-overlay.img
+pytorch_24.10-py3.sif
+data
+
 # Misc
 outputs/
 checkpoints/*
