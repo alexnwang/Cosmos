@@ -444,7 +444,7 @@ class DiffusionVideo2WorldGenerationPipeline(DiffusionText2WorldGenerationPipeli
             seed=seed,
         )
 
-    def _run_prompt_upsampler_on_prompt(self, image_or_video_path: str) -> str:
+    def _run_prompt_upsampler_on_prompt(self, image_or_video_path: str, prompt: Optional[str] = None) -> str:
         """Enhance the input prompt using visual context from the conditioning image.
 
         Args:
@@ -453,7 +453,7 @@ class DiffusionVideo2WorldGenerationPipeline(DiffusionText2WorldGenerationPipeli
         Returns:
             str: Enhanced prompt incorporating visual details from the image
         """
-        dialog = prepare_dialog(image_or_video_path)
+        dialog = prepare_dialog(image_or_video_path, prompt=prompt)
         upsampled_prompt = run_chat_completion_vlm(
             self.prompt_upsampler, dialog, max_gen_len=400, temperature=0.01, top_p=0.9, logprobs=False
         )
@@ -618,8 +618,12 @@ class DiffusionVideo2WorldGenerationPipeline(DiffusionText2WorldGenerationPipeli
 
         # Enhance prompt
         if self.enable_prompt_upsampler:
-            log.info("Run prompt upsampler on image or video, input prompt is not used")
-            prompt = self._run_prompt_upsampler_on_prompt_with_offload(image_or_video_path=image_or_video_path)
+            # log.info("Run prompt upsampler on image or video, input prompt is not used")
+            if prompt is None:
+                prompt = self._run_prompt_upsampler_on_prompt_with_offload(image_or_video_path=image_or_video_path)
+            else:
+                log.info("Run prompt upsampler on prompt")
+                prompt = self._run_prompt_upsampler_on_prompt_with_offload(image_or_video_path=image_or_video_path, prompt=prompt)
             if self.enable_text_guardrail:
                 log.info("Run guardrail on upsampled prompt")
                 is_safe = self._run_guardrail_on_prompt_with_offload(prompt)

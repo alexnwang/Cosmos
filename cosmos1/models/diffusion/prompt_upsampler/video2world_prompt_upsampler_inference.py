@@ -23,6 +23,7 @@ Command:
 import argparse
 import os
 from math import ceil
+from typing import Optional
 
 from PIL import Image
 
@@ -71,7 +72,7 @@ def resize_image(image: Image.Image, max_size: int = 1024) -> Image.Image:
     return image
 
 
-def prepare_dialog(image_or_video_path: str) -> list[dict]:
+def prepare_dialog(image_or_video_path: str, prompt: Optional[str] = None) -> list[dict]:
     if image_or_video_path.endswith(".mp4"):
         video_np, _ = load_from_fileobj(image_or_video_path, format="mp4")
         image_frame = video_np[-1]
@@ -80,10 +81,16 @@ def prepare_dialog(image_or_video_path: str) -> list[dict]:
         image: Image.Image = Image.open(image_or_video_path)
 
     image = resize_image(image, max_size=1024)
-    prompt = """\
+    if prompt is None:
+        prompt = """\
 Your task is to transform a given prompt into a refined and concise video description, no more than 150 words.
 Focus only on the content, no filler words or descriptions on the style. Never mention things outside the video.
     """.strip()
+    else:
+        prompt = f"""
+Your task is to transform the given prompt and action {{{prompt}}} into a refined and concise video description, no more than 150 words.
+Focus only on the content, no filler words or descriptions on the style. Never mention things outside the video.
+        """.strip()
 
     return [
         {
