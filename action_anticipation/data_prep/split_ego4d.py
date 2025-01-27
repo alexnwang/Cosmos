@@ -42,6 +42,12 @@ def main(narration_file, annotations_file, video_dir, uid, output_dir, temporal_
         
         narrations = narrations_dict[uid]['narration_pass_1']['narrations']
         
+        # Write narrations_dict to the output_dir as a jsonl file
+        narrations_jsonl_path = output_dir / "narrations.jsonl"
+        with open(narrations_jsonl_path, 'w') as narrations_jsonl_file:
+            for narration in narrations:
+                narrations_jsonl_file.write(json.dumps(narration) + '\n')
+
         for i, narration in tqdm(enumerate(narrations), total=len(narrations)):
             if temporal_jitter is not None:
                 jitter_range = [float(x) for x in temporal_jitter.split(',')]
@@ -75,7 +81,7 @@ def main(narration_file, annotations_file, video_dir, uid, output_dir, temporal_
                 continue
             
             conditioning_clip_path = os.path.join(output_dir, f"{video_name}_{start_time:.2f}_{end_time:.2f}-pretext.mp4")
-            os.system(f"ffmpeg -loglevel quiet -ss {conditioning_start_time} -to {conditioning_end_time} -i {video_path} -vf scale=848:480 -r 24 {conditioning_clip_path}")
+            os.system(f"ffmpeg -loglevel quiet -ss {conditioning_start_time} -to {conditioning_end_time} -i {video_path} -vf scale=1280:720 -r 24 {conditioning_clip_path}")
             
             # only use in jsonl if the conditioning clip exists
             entries.append({
