@@ -23,6 +23,9 @@ launch_scripts.sh
 launcher.sh
 script_dump.sh
 
+nemo-cosmos.sif
+nemo_experiments
+
 # Misc
 outputs/
 checkpoints/*
