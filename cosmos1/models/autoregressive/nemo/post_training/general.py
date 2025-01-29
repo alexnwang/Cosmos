@@ -110,9 +110,9 @@ if __name__ == "__main__":
         "--model_path", default="nvidia/Cosmos-1.0-Autoregressive-4B", type=str, help="The path to the nemo model"
     )
     parser.add_argument(
-        "--index_mapping_dir", default="./index_mapping", type=str, help="The directory to store mapped indices"
+        "--index_mapping_dir", default="nemo_experiments/autoregressive/index_mapping", type=str, help="The directory to store mapped indices"
     )
-    parser.add_argument("--log_dir", default="./log_dir", type=str, help="The path to the logs")
+    parser.add_argument("--log_dir", default="nemo_experiments/autoregressive/log_dir", type=str, help="The path to the logs")
     parser.add_argument("--split_string", default="98,1,1", type=str, help="The train/test/validation split")
     parser.add_argument("--tensor_model_parallel_size", default=2, type=int, help="Tensor model parallel size")
     parser.add_argument("--max_steps", default=100, type=int, help="The max number of steps to run finetuning")
