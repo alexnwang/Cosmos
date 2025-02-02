@@ -89,25 +89,32 @@ def main(args):
         inp_vid = input_videos[input_filename]
         # Generate video
         log.info(f"Run with image or video path: {input_filename}")
-        out_vid = pipeline.generate(
-            inp_vid=inp_vid,
-            num_input_frames=args.num_input_frames,
-            seed=args.seed,
-            sampling_config=sampling_config,
-        )
-        if out_vid is None:
-            log.critical("Guardrail blocked base generation.")
-            continue
+        for seed in range(args.seed, args.seed + args.num_seeds):
+            out_vid = pipeline.generate(
+                inp_vid=inp_vid,
+                num_input_frames=args.num_input_frames,
+                seed=seed,
+                sampling_config=sampling_config,
+            )
+            if out_vid is None:
+                log.critical("Guardrail blocked base generation.")
+                continue
 
-        # Save video
-        if args.input_image_or_video_path:
-            out_vid_path = os.path.join(args.video_save_folder, f"{args.video_save_name}.mp4")
-        else:
-            out_vid_path = os.path.join(args.video_save_folder, f"{idx}.mp4")
+            # Save video
+            if args.input_image_or_video_path:
+                out_vid_path = os.path.join(args.video_save_folder, f"{args.video_save_name}-{seed}.mp4")
+                prompt_save_path = os.path.join(args.video_save_folder, f"{args.video_save_name}-{seed}.txt")
+            else:
+                out_vid_path = os.path.join(args.video_save_folder, f"{idx}-seed{seed}.mp4")
+                prompt_save_path = os.path.join(args.video_save_folder, f"{idx}-seed{seed}.txt")
+            imageio.mimsave(out_vid_path, out_vid, fps=25)
+            
+            with open(prompt_save_path, "w") as f:
+                f.write(input_filename)
+                f.write("\n")
+                f.write(input_filename.replace("-pretext", ""))
 
-        imageio.mimsave(out_vid_path, out_vid, fps=25)
-
-        log.info(f"Saved video to {out_vid_path}")
+            log.info(f"Saved video to {out_vid_path}")
 
 
 if __name__ == "__main__":

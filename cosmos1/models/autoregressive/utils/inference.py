@@ -70,6 +70,7 @@ def add_common_arguments(parser):
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling")
     parser.add_argument("--top_p", type=float, default=0.8, help="Top-p value for sampling")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--num_seeds", type=int, default=1, help="Number of seeds for sampling")
     parser.add_argument("--disable_diffusion_decoder", action="store_true", help="Disable diffusion decoder")
     parser.add_argument(
         "--offload_guardrail_models",
