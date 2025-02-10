@@ -24,6 +24,55 @@ from nemo.lightning.pytorch.strategies.utils import RestoreConfig
 
 
 @run.cli.factory(target=llm.train)
+def cosmos_diffusion_7b_text2world_lora() -> run.Partial:
+    # Model setup
+    recipe = pretrain()
+    recipe.model.config = run.Config(DiT7BConfig)
+
+    # Trainer setup
+    recipe.trainer.max_steps = 1000
+    recipe.optim.config.lr = 1e-6
+
+    # Tensor / Sequence parallelism
+    recipe.trainer.strategy.tensor_model_parallel_size = 1
+    recipe.trainer.strategy.sequence_parallel = False
+    recipe.trainer.strategy.ckpt_async_save = False
+
+    # FSDP
+    recipe.trainer.strategy.ddp.with_megatron_fsdp_code_path = True
+    recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = "MODEL_AND_OPTIMIZER_STATES"
+    recipe.trainer.strategy.ddp.overlap_param_gather = True
+    recipe.trainer.strategy.ddp.overlap_grad_reduce = True
+    recipe.model.config.use_cpu_initialization = True
+    recipe.trainer.strategy.grad_reduce_in_fp32 = False
+    recipe.trainer.strategy.ddp.grad_reduce_in_fp32 = False
+    
+    # Activation Checkpointing
+    # recipe.model.config.recompute_granularity = "full"
+    # recipe.model.config.recompute_method = "uniform"
+    # recipe.model.config.recompute_num_layers = 1
+
+    # Data setup
+    recipe.data = videofolder_datamodule()
+    recipe.data.path = ""  # path to folder with processed dataset
+
+    # Checkpoint load
+    recipe.resume.restore_config = run.Config(RestoreConfig, load_artifacts=False)
+    recipe.resume.restore_config.path = os.path.join(
+        snapshot_download("nvidia/Cosmos-1.0-Diffusion-7B-Text2World", allow_patterns=["nemo/*"]), "nemo"
+    )  # path to diffusion model checkpoint
+    recipe.resume.resume_if_exists = False
+
+    # Directory to save checkpoints / logs
+    recipe.log.log_dir = "nemo_experiments/cosmos_diffusion_7b_text2world_lora"
+    recipe.trainer.strategy.sequence_parallel = False
+    recipe.model_transform = run.Config(llm.peft.LoRA,
+        target_modules=['linear_qkv', 'linear_proj', 'linear_fc1', 'linear_fc2'],
+        dim=256,
+    )
+
+    return recipe
+@run.cli.factory(target=llm.train)
 def cosmos_diffusion_7b_text2world_finetune() -> run.Partial:
     # Model setup
     recipe = pretrain()
@@ -35,7 +84,7 @@ def cosmos_diffusion_7b_text2world_finetune() -> run.Partial:
 
     # Tensor / Sequence parallelism
     recipe.trainer.strategy.tensor_model_parallel_size = 8
-    recipe.trainer.strategy.sequence_parallel = True
+    recipe.trainer.strategy.sequence_parallel = False
     recipe.trainer.strategy.ckpt_async_save = False
 
     # FSDP
@@ -44,6 +93,11 @@ def cosmos_diffusion_7b_text2world_finetune() -> run.Partial:
     recipe.trainer.strategy.ddp.overlap_param_gather = True
     recipe.trainer.strategy.ddp.overlap_grad_reduce = True
     recipe.model.config.use_cpu_initialization = True
+    
+    # # Activation Checkpointing
+    recipe.model.config.recompute_granularity = "full"
+    recipe.model.config.recompute_method = "uniform"
+    recipe.model.config.recompute_num_layers = 1
 
     # Data setup
     recipe.data = videofolder_datamodule()
