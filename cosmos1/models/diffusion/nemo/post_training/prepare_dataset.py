@@ -41,6 +41,7 @@ def get_parser():
     parser.add_argument("--num_chunks", type=int, default=5, help="Number of random chunks to sample per video")
     parser.add_argument("--height", type=int, default=704, help="Height to resize video")
     parser.add_argument("--width", type=int, default=1280, help="Width to resize video")
+    parser.add_argument("--num_frames", type=int, default=121, help="Number of frames per chunk")
     return parser
 
 
@@ -109,7 +110,12 @@ def main(args):
 
     # Constants
     t5_embeding_max_length = 512
-    chunk_duration = vae.video_vae.pixel_chunk_duration  # Frames per chunk
+    if args.num_frames != vae.video_vae.pixel_chunk_duration:
+        print(f"Using {args.num_frames} frames per chunk")
+        chunk_duration = args.num_frames
+    else:
+        print(f"Using {vae.video_vae.pixel_chunk_duration} frames per chunk")
+        chunk_duration = vae.video_vae.pixel_chunk_duration  # Frames per chunk
     cnt = 0  # File index
 
     # Check if dataset_path is correct
@@ -136,6 +142,10 @@ def main(args):
 
                 # Rearrange dimensions: (T, H, W, C) -> (T, C, H, W)
                 chunk = rearrange(chunk, "t h w c -> t c h w")
+                
+                # if chunk_duration != vae.video_vae.pixel_chunk_duration, pad it up to the required length
+                if chunk_duration != vae.video_vae.pixel_chunk_duration:
+                    chunk = torch.cat([chunk, torch.zeros(vae.video_vae.pixel_chunk_duration - chunk_duration, C, H, W)], dim=0)
 
                 # Resize to [704, 1280] for each frame
                 chunk = torchvision.transforms.functional.resize(chunk, [args.height, args.width])
@@ -148,6 +158,10 @@ def main(args):
 
                 # Encode video
                 latent = vae.encode(chunk).cpu()  # shape: (1, latent_channels, T//factor, H//factor, W//factor)
+                
+                # if chunk_duration != vae.video_vae.pixel_chunk_duration, cut off the padded frames
+                if chunk_duration != vae.video_vae.pixel_chunk_duration:
+                    latent = latent[:, :, :(chunk_duration-1) // 8 + 1, :, :] # hack as it's always temporal stride = 8
 
                 # Encode text
                 out = encode_for_batch(tokenizer, text_encoder, [args.prompt])[0]
@@ -169,8 +183,8 @@ def main(args):
 
                 # Save metadata
                 info = {
-                    "height": H,
-                    "width": W,
+                    "height": args.height,
+                    "width": args.width,
                     "fps": meta["video_fps"],
                     "num_frames": chunk_duration,
                     "video_path": os.path.basename(video_path),

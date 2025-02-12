@@ -78,6 +78,7 @@ def cosmos_diffusion_7b_video2world_finetune() -> run.Partial:
     # Model setup
     recipe = pretrain()
     recipe.model.config = run.Config(DiT7BExtendConfig)
+    recipe.model.config.vae_path = snapshot_download("nvidia/Cosmos-1.0-Tokenizer-CV8x8x8")
 
     # Trainer setup
     recipe.trainer.max_steps = 1000
@@ -106,6 +107,11 @@ def cosmos_diffusion_7b_video2world_finetune() -> run.Partial:
     # Data setup
     recipe.data = videofolder_datamodule()
     recipe.data.path = ""  # path to folder with processed dataset
+    
+    # validation setup
+    recipe.trainer.num_sanity_val_steps = 8
+    recipe.trainer.limit_val_batches = 8
+    recipe.trainer.check_val_every_n_epoch = 5
 
     # Checkpoint load
     recipe.resume.restore_config = run.Config(RestoreConfig, load_artifacts=False)
