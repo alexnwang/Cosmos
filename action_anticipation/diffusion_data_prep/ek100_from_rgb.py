@@ -33,6 +33,7 @@ def get_parser():
     parser.add_argument("--num_frames", type=int, default=33, help="Number of frames per chunk")
     parser.add_argument("--fps", type=int, default=12, help="Frames per second")
     parser.add_argument("--max_text_length", type=int, default=512, help="Maximum text length")
+    parser.add_argument("--split", type=str, choices=["train", "validation", "test"], default="train", help="Dataset split")
     return parser
 
 def init_t5(device="cuda"):
@@ -123,7 +124,7 @@ def main(args):
         chunk_duration = vae.video_vae.pixel_chunk_duration  # Frames per chunk
     
     # check if annotations exist
-    train_annotations = os.path.join(args.dataset_path, "anns/EPIC_100_train.pkl")
+    train_annotations = os.path.join(args.dataset_path, f"anns/EPIC_100_{args.split}.pkl")
     assert os.path.exists(train_annotations), "Training annotations not found"
     
     # load annotations
