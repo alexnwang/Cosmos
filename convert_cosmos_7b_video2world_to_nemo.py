@@ -28,14 +28,8 @@ except (ImportError, ModuleNotFoundError):
 def get_args():
     parser = ArgumentParser()
     parser.add_argument("--ckpt_path", type=str, default="/home/anw2067/scratch/Cosmos/checkpoints/Cosmos-1.0-Diffusion-7B-Video2World/model.pt", help="Path to checkpoint.")
+    parser.add_argument("--output_path", type=str, required=True, help="Path to output checkpoint.")
 
-    parser.add_argument(
-        "--hparams_file",
-        type=str,
-        default=None,
-        required=False,
-        help="Path config for restoring. It's created during training and may need to be modified during restore if restore environment is different than training. Ex: /raid/nemo_experiments/megatron_gpt/hparams.yaml",
-    )
     # parser.add_argument("--nemo_file_path", type=str, default=None, required=True, help="Path to output .nemo file.")
     parser.add_argument("--gpus_per_node", type=int, required=False, default=1)
     parser.add_argument("--tensor_model_parallel_size", type=int, required=False, default=1)
@@ -48,9 +42,6 @@ def get_args():
         help="If pipeline parallel size > 1, this is the rank at which the encoder ends and the decoder begins.",
     )
     parser.add_argument("--local_rank", type=int, required=False, default=os.getenv('LOCAL_RANK', -1))
-    parser.add_argument("--bcp", action="store_true", help="Whether on BCP platform")
-    parser.add_argument("--model_type", type=str, required=False, default="stable_diffusion")
-    parser.add_argument("--nemo_clip_path", type=str, required=False, help="Path to clip ckpt file in .nemo format")
 
     args = parser.parse_args()
     return args
@@ -168,30 +159,12 @@ def convert(local_rank, rank, world_size, args):
     app_state = AppState()
     app_state.data_parallel_rank = 0
     num_nodes = world_size // args.gpus_per_node
-    if args.bcp:
-        trainer = Trainer(
-            devices=args.gpus_per_node, num_nodes=num_nodes, accelerator='gpu', plugins=[TorchElasticEnvironment()]
-        )
-    else:
-        trainer = Trainer(devices=args.gpus_per_node, num_nodes=num_nodes, accelerator='gpu')
+    trainer = Trainer(devices=args.gpus_per_node, num_nodes=num_nodes, accelerator='gpu')
 
     app_state.pipeline_model_parallel_size = args.pipeline_model_parallel_size
     app_state.tensor_model_parallel_size = args.tensor_model_parallel_size
 
-    # no use atm, use to split ranks in encoder/decoder models.
-    if args.pipeline_model_parallel_size > 1 and args.model_type in []:
-        if args.pipeline_model_parallel_split_rank is not None:
-            app_state.pipeline_model_parallel_split_rank = args.pipeline_model_parallel_split_rank
-        else:
-            if args.pipeline_model_parallel_size % 2 != 0:
-                raise ValueError(
-                    f"Pipeline model parallel size {args.pipeline_model_parallel_size} must be even if split rank is not specified."
-                )
-            else:
-                # If split rank is not set, then we set it to be pipeline_model_parallel_size // 2 - this is because in most cases we have the same number of enc/dec layers.
-                app_state.pipeline_model_parallel_split_rank = args.pipeline_model_parallel_size // 2
-    else:
-        app_state.pipeline_model_parallel_split_rank = None
+    app_state.pipeline_model_parallel_split_rank = None
 
     app_state.model_parallel_size = app_state.tensor_model_parallel_size * app_state.pipeline_model_parallel_size
 
@@ -207,6 +180,7 @@ def convert(local_rank, rank, world_size, args):
     app_state.is_model_being_restored = True
     
     ### Now load the full model and full checkpoint and copy the weights
+    breakpoint()
     from nemo.collections.diffusion.models.model import DiTModel
     from nemo.lightning.io.pl import MegatronCheckpointIO
     model = DiTModel(DiT7BExtendConfig())
@@ -218,7 +192,7 @@ def convert(local_rank, rank, world_size, args):
         for k, v in nemo_dict.items():
             f.write(f"{k}: {v.shape}\n")
     
-    torch_dict = torch.load("/home/anw2067/scratch/Cosmos/checkpoints/Cosmos-1.0-Diffusion-7B-Video2World/model.pt")
+    torch_dict = torch.load(args.ckpt_path)
 
     with open("torch_dict.txt", "w") as f:
         for k, v in torch_dict.items():
@@ -245,10 +219,9 @@ def convert(local_rank, rank, world_size, args):
     
     # Save the merged state dict using MegatronCheckpointIO
     checkpoint_io = MegatronCheckpointIO('zarr')
-    output_checkpoint_path = "/home/anw2067/scratch/Cosmos/checkpoints/Cosmos-1.0-Diffusion-7B-Video2World-nemo-zarr"
+    output_checkpoint_path = args.output_path
     checkpoint_io.save_checkpoint(sharded_state_dict, output_checkpoint_path)
     print(f"Checkpoint saved to {output_checkpoint_path}")
-    
     
 
 if __name__ == '__main__':
