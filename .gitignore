@@ -13,6 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+*.sif
+data/*
+nemo_experiments/*
+sbatch_dump/*
+
 # Misc
 outputs/
 checkpoints/*
@@ -241,3 +246,8 @@ manifest.json
 wandb/
 onelogger.err
 onelogger.log
+launch_scripts.sh
+launcher.sh
+open_singularity
+pytorch_24.10-py3-overlay.img
+action_anticipation/script_dump.sh
