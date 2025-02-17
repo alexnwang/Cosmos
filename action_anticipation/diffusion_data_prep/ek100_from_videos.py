@@ -103,6 +103,13 @@ def encode_for_batch(tokenizer, encoder, prompts: list[str], max_length=512):
 
 
 def main(args):
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
+    device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
+    print(f"Rank {rank} using device {device}, {torch.cuda.current_device()}")
+    
     # Set up output directory
     os.makedirs(args.output_path, exist_ok=True)
 
@@ -129,10 +136,12 @@ def main(args):
     # compute the number of seconds per chunk
     seconds_per_chunk = chunk_duration / args.fps + 0.25
     # temp path for clips so we can use ffmpeg to produce them
-    temp_file = os.path.join(args.output_path, "temp.mp4")
+    temp_file = os.path.join(args.output_path, f"temp{rank}.mp4")
     
-    count = 0
     for i, annotation_dict in tqdm(annotations.iterrows(), total=len(annotations)):
+        if i % world_size != rank:
+            continue
+        
         annotation_dict = annotation_dict.to_dict()
         video_path = os.path.join(args.dataset_path, annotation_dict['participant_id'], 'videos', f"{annotation_dict['video_id']}.MP4")
         video_duration = float(os.popen(f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {video_path}").read().strip())
@@ -164,7 +173,7 @@ def main(args):
         video, _, meta = torchvision.io.read_video(temp_file)
         T, H, W, C = video.shape
         
-        for chunk_start in range(0, T-chunk_duration, 1 * args.fps): # chunks start at 1 second intervals
+        for j, chunk_start in enumerate(range(0, T-chunk_duration, 1 * args.fps)): # chunks start at 1 second intervals
             chunk = video[chunk_start : chunk_start + chunk_duration]
             
             chunk = rearrange(chunk, "t h w c -> t c h w")
@@ -200,12 +209,12 @@ def main(args):
             t5_embed[0, :L] = encoded_text
 
             # Save data to folder
-            torch.save(latent[0], os.path.join(args.output_path, f"{count}.video_latent.pth"))
-            torch.save(t5_embed[0], os.path.join(args.output_path, f"{count}.t5_text_embeddings.pth"))
+            torch.save(latent[0], os.path.join(args.output_path, f"{i}-{j}.video_latent.pth"))
+            torch.save(t5_embed[0], os.path.join(args.output_path, f"{i}-{j}.t5_text_embeddings.pth"))
 
             # Create a T5 text mask of all ones
             torch.save(
-                torch.ones(512, dtype=torch.bfloat16), os.path.join(args.output_path, f"{count}.t5_text_mask.pth")
+                torch.ones(512, dtype=torch.bfloat16), os.path.join(args.output_path, f"{i}-{j}.t5_text_mask.pth")
             )
 
             # Save metadata
@@ -218,9 +227,8 @@ def main(args):
                 "start_frame": start_time*args.fps + chunk_start,
                 "narration": annotation_dict['narration']
             }
-            with open(os.path.join(args.output_path, f"{count}.info.json"), "w") as json_file:
+            with open(os.path.join(args.output_path, f"{i}-{j}.info.json"), "w") as json_file:
                 json.dump(info, json_file)
-            count += 1
         
         # Delete the temp_file
         if os.path.exists(temp_file):
