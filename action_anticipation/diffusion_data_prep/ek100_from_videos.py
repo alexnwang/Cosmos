@@ -48,14 +48,15 @@ def get_parser():
     parser.add_argument("--fps", type=int, default=24, help="Frames per second of the video")
     
     parser.add_argument("--temporal_jitter", default=None, required=False, type=str, help="Temporal jitter range in seconds to apply to the pretext clip. Provide as a comma-separated list of two floats.")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for encoding")
     return parser
 
 
-def init_t5():
+def init_t5(device="cuda"):
     """Initialize and return the T5 tokenizer and text encoder."""
     tokenizer = T5TokenizerFast.from_pretrained("google-t5/t5-11b")
     text_encoder = T5EncoderModel.from_pretrained("google-t5/t5-11b")
-    text_encoder.to("cuda")
+    text_encoder.to(device)
     text_encoder.eval()
     return tokenizer, text_encoder
 
@@ -68,7 +69,7 @@ def init_video_tokenizer(tokenizer_dir: str):
 
 
 @torch.no_grad()
-def encode_for_batch(tokenizer, encoder, prompts: list[str], max_length=512):
+def encode_for_batch(tokenizer, encoder, prompts: list[str], max_length=512, device="cuda"):
     """
     Encode a batch of text prompts to a batch of T5 embeddings.
     Parameters:
@@ -89,9 +90,8 @@ def encode_for_batch(tokenizer, encoder, prompts: list[str], max_length=512):
     )
 
     # We expect all the processing is done on GPU.
-    input_ids = batch_encoding.input_ids.cuda()
-    attn_mask = batch_encoding.attention_mask.cuda()
-
+    input_ids = batch_encoding.input_ids.to(device)
+    attn_mask = batch_encoding.attention_mask.to(device)
     outputs = encoder(input_ids=input_ids, attention_mask=attn_mask)
     encoded_text = outputs.last_hidden_state
 
@@ -101,53 +101,32 @@ def encode_for_batch(tokenizer, encoder, prompts: list[str], max_length=512):
 
     return encoded_text
 
-
-def main(args):
-    rank = int(os.environ.get("RANK", 0))
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
+class PreprocessDataset(torch.utils.data.Dataset):
+    def __init__(self, annotations_file, dataset_path, output_path, seconds_per_chunk, height, width, num_frames, fps, temporal_jitter=None):
+        self.annotations = pd.read_csv(annotations_file)
+        self.dataset_path = dataset_path
+        self.output_path = output_path
+        self.seconds_per_chunk = seconds_per_chunk
+        self.height = height
+        self.width = width
+        self.num_frames = num_frames
+        self.fps = fps
+        self.temporal_jitter = temporal_jitter
     
-    device = torch.device(f"cuda:{rank}")
-    torch.cuda.set_device(device)
-    print(f"Rank {rank} using device {device}, {torch.cuda.current_device()}")
+    def __len__(self):
+        return len(self.annotations)
     
-    # Set up output directory
-    os.makedirs(args.output_path, exist_ok=True)
-
-    # Initialize T5
-    tokenizer, text_encoder = init_t5()
-
-    # Initialize the VAE
-    if args.tokenizer_dir == "":
-        args.tokenizer_dir = snapshot_download("nvidia/Cosmos-1.0-Tokenizer-CV8x8x8")
-    vae = init_video_tokenizer(args.tokenizer_dir)
-
-    # Constants
-    t5_embeding_max_length = 512
-    if args.num_frames != vae.video_vae.pixel_chunk_duration:
-        print(f"Using {args.num_frames} frames per chunk")
-        chunk_duration = args.num_frames
-    else:
-        print(f"Using {vae.video_vae.pixel_chunk_duration} frames per chunk")
-        chunk_duration = vae.video_vae.pixel_chunk_duration  # Frames per chunk
+    def __getitem__(self, idx):
+        rank = int(os.environ.get("RANK", 0))
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info else 0
         
-    # load annotations and narrations 
-    annotations = pd.read_csv(args.annotations_file)
-    
-    # compute the number of seconds per chunk
-    seconds_per_chunk = chunk_duration / args.fps + 0.25
-    # temp path for clips so we can use ffmpeg to produce them
-    temp_file = os.path.join(args.output_path, f"temp{rank}.mp4")
-    
-    for i, annotation_dict in tqdm(annotations.iterrows(), total=len(annotations)):
-        if i % world_size != rank:
-            continue
-        
-        annotation_dict = annotation_dict.to_dict()
-        video_path = os.path.join(args.dataset_path, annotation_dict['participant_id'], 'videos', f"{annotation_dict['video_id']}.MP4")
+        annotation_dict = self.annotations.iloc[idx].to_dict()
+        video_path = os.path.join(self.dataset_path, annotation_dict['participant_id'], 'videos', f"{annotation_dict['video_id']}.MP4")
         video_duration = float(os.popen(f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {video_path}").read().strip())
         
-        if args.temporal_jitter is not None:
-            jitter_range = [float(x) for x in args.temporal_jitter.split(',')]
+        if self.temporal_jitter is not None:
+            jitter_range = [float(x) for x in self.temporal_jitter.split(',')]
             assert isinstance(jitter_range, Iterable) and len(jitter_range) == 2
             jitter = random.uniform(*jitter_range)
         else:
@@ -162,22 +141,63 @@ def main(args):
         
         # modify with jitter and make endtime at minimum as long as the seconds_per_chunk
         start_time = max(start_time + jitter, 0)
-        end_time = min(max(start_time + seconds_per_chunk, end_time), video_duration)
+        end_time = min(max(start_time + self.seconds_per_chunk, end_time), video_duration)
         
         # save the clip to a temp_file
-        os.system(f"ffmpeg -loglevel quiet -ss {start_time} -to {end_time} -i {video_path} -r {args.fps} {temp_file}")
+        temp_file = os.path.join(self.output_path, f"temp{rank}_{worker_id}.mp4")
+        if not os.path.exists(temp_file):
+            os.system(f"ffmpeg -loglevel quiet -y -ss {start_time} -to {end_time} -i {video_path} -vf scale={self.width}:{self.height} -r {self.fps} {temp_file}")
         
         # Read video (T x H x W x C)
-            
-            # Read video (T x H x W x C)
         video, _, meta = torchvision.io.read_video(temp_file)
-        T, H, W, C = video.shape
         
-        for j, chunk_start in enumerate(range(0, T-chunk_duration, 1 * args.fps)): # chunks start at 1 second intervals
-            chunk = video[chunk_start : chunk_start + chunk_duration]
-            
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        
+        return idx, video, meta, annotation_dict, video_path, start_time
+        
+def main(args):
+    rank = int(os.environ.get("RANK", 0))
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
+    
+    device = torch.device(f"cuda:{rank}")
+    torch.cuda.set_device(device)
+    print(f"Rank {rank} using device {device}, {torch.cuda.current_device()}")
+    
+    # Set up output directory
+    os.makedirs(args.output_path, exist_ok=True)
+
+    # Initialize T5
+    tokenizer, text_encoder = init_t5(device) # load to CPU and adjust to device at inference
+
+    # Initialize the VAE
+    if args.tokenizer_dir == "":
+        args.tokenizer_dir = snapshot_download("nvidia/Cosmos-1.0-Tokenizer-CV8x8x8")
+    vae = init_video_tokenizer(args.tokenizer_dir).to(device)
+    
+    torch.cuda.empty_cache()
+
+    # Constants
+    t5_embeding_max_length = 512
+    if args.num_frames != vae.video_vae.pixel_chunk_duration:
+        print(f"Using {args.num_frames} frames per chunk")
+        chunk_duration = args.num_frames
+    else:
+        print(f"Using {vae.video_vae.pixel_chunk_duration} frames per chunk")
+        chunk_duration = vae.video_vae.pixel_chunk_duration  # Frames per chunk
+        
+    dataset = PreprocessDataset(args.annotations_file, args.dataset_path, args.output_path, chunk_duration / args.fps + 0.25, args.height, args.width, args.num_frames, args.fps, args.temporal_jitter)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=4, prefetch_factor=1,
+                                             sampler=torch.utils.data.DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False))
+    
+    examples = []
+    overflow_examples = []
+    for i, video, meta, annotation_dict, video_path, start_time in tqdm(dataloader):
+        T, H, W, C = video.shape
+        for j, chunk_start in enumerate(range(0, T - chunk_duration, 1 * args.fps)):  # chunks start at 1 second intervals
+            chunk = video[chunk_start: chunk_start + chunk_duration]
             chunk = rearrange(chunk, "t h w c -> t c h w")
-            
+
             # if chunk_duration != vae.video_vae.pixel_chunk_duration, pad it up to the required length
             if chunk_duration != vae.video_vae.pixel_chunk_duration:
                 chunk = torch.cat([chunk, torch.zeros(vae.video_vae.pixel_chunk_duration - chunk_duration, C, H, W)], dim=0)
@@ -189,50 +209,65 @@ def main(args):
             chunk = rearrange(chunk, "(b t) c h w -> b c t h w", b=1)
 
             # Convert to bf16 and normalize from [0, 255] to [-1, 1]
-            chunk = chunk.to(device="cuda", dtype=torch.bfloat16, non_blocking=True) / 127.5 - 1.0
+            chunk = chunk.to(dtype=torch.bfloat16, non_blocking=True) / 127.5 - 1.0
 
-            # Encode video
-            latent = vae.encode(chunk).cpu()  # shape: (1, latent_channels, T//factor, H//factor, W//factor)
+            if len(examples) < args.batch_size:
+                examples.append((i, j, chunk, annotation_dict, video_path, start_time + chunk_start / args.fps))
+            else:
+                overflow_examples.append((i, j, chunk, annotation_dict, video_path, start_time + chunk_start / args.fps))
+
+        while len(examples) == args.batch_size:
+            # Process the batch of examples
+            video_chunks = torch.cat([ex[2] for ex in examples], dim=0)
+            # vae = vae.to(device)
+            latents = vae.encode(video_chunks.to(device)).cpu()
+            # vae = vae.to("cpu")
             
-            # if chunk_duration != vae.video_vae.pixel_chunk_duration, cut off the padded frames
-            if chunk_duration != vae.video_vae.pixel_chunk_duration:
-                latent = latent[:, :, :(chunk_duration-1) // 8 + 1, :, :] # hack as it's always temporal stride = 8
+            # Encode text for the batch
+            texts = [ex[3]['narration'] for ex in examples]
+            encoded_texts = encode_for_batch(tokenizer, text_encoder, texts, device=device).cpu()
 
-            # Encode text
-            text: str = annotation_dict['narration']
-            out = encode_for_batch(tokenizer, text_encoder, [text])[0]
-            encoded_text = torch.tensor(out, dtype=torch.bfloat16)
+            # Process each example in the batch
+            for ex, latent, encoded_text in zip(examples, latents, encoded_texts):
+                i, j, chunk, annotation_dict, video_path, start_time = ex
+                #latent of shape (c, t, h, w)
+                #encoded_text of shape (l, d)
 
-            # Pad T5 embedding to t5_embeding_max_length
-            L, C_ = encoded_text.shape
-            t5_embed = torch.zeros(1, t5_embeding_max_length, C_, dtype=torch.bfloat16)
-            t5_embed[0, :L] = encoded_text
+                # if chunk_duration != vae.video_vae.pixel_chunk_duration, cut off the padded frames
+                if chunk_duration != vae.video_vae.pixel_chunk_duration:
+                    latent = latent[:, :(chunk_duration - 1) // 8 + 1, :, :]
 
-            # Save data to folder
-            torch.save(latent[0], os.path.join(args.output_path, f"{i}-{j}.video_latent.pth"))
-            torch.save(t5_embed[0], os.path.join(args.output_path, f"{i}-{j}.t5_text_embeddings.pth"))
+                # Pad T5 embedding to t5_embeding_max_length
+                L, C_ = encoded_text.shape
+                t5_embed = torch.zeros(t5_embeding_max_length, C_, dtype=torch.bfloat16)
+                t5_embed[:L] = encoded_text
 
-            # Create a T5 text mask of all ones
-            torch.save(
-                torch.ones(512, dtype=torch.bfloat16), os.path.join(args.output_path, f"{i}-{j}.t5_text_mask.pth")
-            )
+                # Save data to folder
+                torch.save(latent, os.path.join(args.output_path, f"{i}-{j}.video_latent.pth"))
+                torch.save(t5_embed, os.path.join(args.output_path, f"{i}-{j}.t5_text_embeddings.pth"))
 
-            # Save metadata
-            info = {
-                "height": args.height,
-                "width": args.width,
-                "fps": meta["video_fps"],
-                "num_frames": chunk_duration,
-                "video_path": os.path.basename(video_path),
-                "start_frame": start_time*args.fps + chunk_start,
-                "narration": annotation_dict['narration']
-            }
-            with open(os.path.join(args.output_path, f"{i}-{j}.info.json"), "w") as json_file:
-                json.dump(info, json_file)
-        
-        # Delete the temp_file
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
+                # Create a T5 text mask of all ones
+                # TODO decide whether or not allowing the model to attend to padding tokens is a good idea
+                torch.save(
+                    torch.ones(512, dtype=torch.bfloat16), os.path.join(args.output_path, f"{i}-{j}.t5_text_mask.pth")
+                )
+
+                # Save metadata
+                info = {
+                    "height": args.height,
+                    "width": args.width,
+                    "fps": meta["video_fps"],
+                    "num_frames": chunk_duration,
+                    "video_name": os.path.basename(video_path),
+                    "start_frame": start_time * args.fps,
+                    "start_time": start_time,
+                    "narration": annotation_dict['narration']
+                }
+                with open(os.path.join(args.output_path, f"{i}-{j}.info.json"), "w") as json_file:
+                    json.dump(info, json_file)
+            
+            examples = overflow_examples[:args.batch_size]
+            overflow_examples = overflow_examples[args.batch_size:]
 
 
 if __name__ == "__main__":
