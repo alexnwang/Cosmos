@@ -22,6 +22,16 @@ from nemo.collections.diffusion.models.model import DiT7BVideo2WorldConfig, DiT1
 from nemo.collections.diffusion.train import pretrain, videofolder_datamodule
 from nemo.lightning.pytorch.strategies.utils import RestoreConfig
 
+@run.cli.factory(target=llm.train)
+def cosmos_diffusion_7b_video2world_finetune_3dparallel() -> run.Partial:
+    recipe = cosmos_diffusion_7b_video2world_finetune()
+    # FSDP
+    recipe.trainer.strategy.ddp.with_megatron_fsdp_code_path = False
+    # recipe.trainer.strategy.ddp.data_parallel_sharding_strategy = "MODEL_AND_OPTIMIZER_STATES"
+    recipe.trainer.strategy.ddp.overlap_param_gather = False
+    recipe.trainer.strategy.ddp.overlap_grad_reduce = False
+
+    return recipe
 
 @run.cli.factory(target=llm.train)
 def cosmos_diffusion_7b_video2world_finetune() -> run.Partial:
