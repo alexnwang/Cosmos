@@ -18,11 +18,17 @@ import os
 import imageio
 import numpy as np
 import torch
+from PIL import Image
 
 from cosmos1.models.autoregressive.model import AutoRegressiveModel
 from cosmos1.models.diffusion.prompt_upsampler.text2world_prompt_upsampler_inference import (
     create_prompt_upsampler,
     run_chat_completion,
+)
+from cosmos1.models.diffusion.prompt_upsampler.video2world_prompt_upsampler_inference import (
+    create_vlm_prompt_upsampler,
+    run_chat_completion as run_video_chat_completion,
+    prepare_dialog as prepare_vlm_dialog
 )
 from cosmos1.models.guardrail.common.presets import (
     create_text_guardrail_runner,
@@ -71,8 +77,10 @@ def process_prompt(
     checkpoint_dir: str,
     prompt_upsampler_dir: str,
     guardrails_dir: str,
-    image_path: str = None,
     enable_prompt_upsampler: bool = True,
+    image_path: str = None,
+    image_text_template=None,
+    from_start: bool=False
 ) -> str:
     """
     Handle prompt upsampling if enabled, then run guardrails to ensure safety.
@@ -97,8 +105,21 @@ def process_prompt(
         raise ValueError("Guardrail blocked world generation.")
 
     if enable_prompt_upsampler:
-        if image_path:
-            raise NotImplementedError("Prompt upsampling is not supported for image generation")
+        if image_path or Image:
+            prompt_upsampler = create_vlm_prompt_upsampler(
+                checkpoint_dir=os.path.join(checkpoint_dir, prompt_upsampler_dir)
+            )
+            if image_text_template is None:
+                dialog = prepare_vlm_dialog(image_path, frame_idx=0 if from_start else -1)
+            else:
+                image_text_template = image_text_template.format(prompt)
+                dialog = prepare_vlm_dialog(image_path, image_text_template, frame_idx=0 if from_start else -1)
+            upsampled_prompt = run_video_chat_completion(
+                prompt_upsampler, dialog, temperature=0.01,
+            )
+            print(f"Original prompt: {prompt}\nUpsampled prompt: {upsampled_prompt}\n")
+            del prompt_upsampler
+            return upsampled_prompt
         else:
             prompt_upsampler = create_prompt_upsampler(
                 checkpoint_dir=os.path.join(checkpoint_dir, prompt_upsampler_dir)

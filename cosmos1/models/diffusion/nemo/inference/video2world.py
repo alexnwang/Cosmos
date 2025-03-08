@@ -108,7 +108,14 @@ def parse_args():
     parser.add_argument(
         "--enable_prompt_upsampler", action="store_true", help="Whether to use prompt upsampling before generation"
     )
-
+    parser.add_argument("--from_start", action="store_true", help="Whether to use the first frames for conditioning")
+    
+    parser.add_argument("--use_vlm", action="store_true", help="Whether to use VLM for prompt upsampling")
+    parser.add_argument("--image_text_template", type=str, default=
+        "Your task is to transform a given prompt into a refined and concise video description, no more than 150 words. "
+        "Focus only on the content, no filler words or descriptions on the style. Never mention things outside the video. ")
+    
+    
     args = parser.parse_args()
     return args
 
@@ -178,6 +185,9 @@ def check_prompt(args):
         prompt_upsampler_dir=args.prompt_upsampler_dir,
         guardrails_dir=args.guardrail_dir,
         enable_prompt_upsampler=args.enable_prompt_upsampler,
+        image_path=args.conditioned_image_or_video_path if args.use_vlm else None,
+        image_text_template=args.image_text_template if args.use_vlm else None,
+        from_start=args.from_start,
     )
 
     if subject_string:
@@ -185,7 +195,7 @@ def check_prompt(args):
     return prompt
 
 
-def create_condition_latent_from_input_frames(tokenizer, input_frames, num_frames_condition=25):
+def create_condition_latent_from_input_frames(tokenizer, input_frames, num_frames_condition=25, from_start=True):
     B, C, T, H, W = input_frames.shape
     num_frames_encode = tokenizer.pixel_chunk_duration
 
@@ -197,7 +207,10 @@ def create_condition_latent_from_input_frames(tokenizer, input_frames, num_frame
     ), f"num_frames_encode should be larger than num_frames_condition, get {num_frames_encode}, {num_frames_condition}"
 
     # Put the conditioal frames to the begining of the video, and pad the end with zero
-    condition_frames = input_frames[:, :, -num_frames_condition:]
+    if from_start:
+        condition_frames = input_frames[:, :, :num_frames_condition]
+    else:
+        condition_frames = input_frames[:, :, -num_frames_condition:]
     padding_frames = condition_frames.new_zeros(B, C, num_frames_encode - num_frames_condition, H, W)
     encode_input_frames = torch.cat([condition_frames, padding_frames], dim=2).to("cuda")
     vae = tokenizer.to(encode_input_frames.device)
@@ -234,6 +247,7 @@ def prepare_data_batch(args, vae, t5_embeding_max_length=512):
     # Prepare data sample
     t, h, w = args.num_video_frames, args.height, args.width
     state_shape = [
+        1,
         vae.channel,
         vae.get_latent_num_frames(t),
         h // vae.spatial_compression_factor,
@@ -250,7 +264,7 @@ def prepare_data_batch(args, vae, t5_embeding_max_length=512):
         ).cuda(),
         "fps": torch.tensor([args.fps] * 1, dtype=torch.bfloat16).cuda(),
         "num_frames": torch.tensor([args.num_video_frames] * 1, dtype=torch.bfloat16).cuda(),
-        "padding_mask": torch.zeros((1, 1, args.height, args.width), dtype=torch.bfloat16).cuda(),
+        "padding_mask": torch.zeros((1, 1, 1, args.height, args.width), dtype=torch.bfloat16).cuda(),
     }
     if args.negative_prompt:
         data_batch["neg_t5_text_embeddings"] = neg_t5_embed
@@ -264,9 +278,8 @@ def prepare_data_batch(args, vae, t5_embeding_max_length=512):
         W=args.width,
     )
 
-    condition_latent, _ = create_condition_latent_from_input_frames(vae, input_frames, args.num_input_frames)
-    data_batch["condition_latent"] = condition_latent
-
+    condition_latent, _ = create_condition_latent_from_input_frames(vae, input_frames, args.num_input_frames, args.from_start)
+    data_batch["condition_latent"] = condition_latent[:, :, :vae.get_latent_num_frames(t)]
     return data_batch, state_shape
 
 
