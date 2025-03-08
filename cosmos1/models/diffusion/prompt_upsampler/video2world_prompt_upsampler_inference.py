@@ -70,20 +70,21 @@ def resize_image(image: Image.Image, max_size: int = 1024) -> Image.Image:
         image = image.resize((ceil(image_width / ratio), ceil(image_height / ratio)))
     return image
 
+DEFAULT_PROMPT="""\
+Your task is to transform a given prompt into a refined and concise video description, no more than 150 words.
+Focus only on the content, no filler words or descriptions on the style. Never mention things outside the video.
+    """
 
-def prepare_dialog(image_or_video_path: str) -> list[dict]:
+def prepare_dialog(image_or_video_path: str, prompt=DEFAULT_PROMPT, frame_idx=False) -> list[dict]:
     if image_or_video_path.endswith(".mp4"):
         video_np, _ = load_from_fileobj(image_or_video_path, format="mp4")
-        image_frame = video_np[-1]
+        image_frame = video_np[frame_idx]
         image = Image.fromarray(image_frame)
     else:
         image: Image.Image = Image.open(image_or_video_path)
 
     image = resize_image(image, max_size=1024)
-    prompt = """\
-Your task is to transform a given prompt into a refined and concise video description, no more than 150 words.
-Focus only on the content, no filler words or descriptions on the style. Never mention things outside the video.
-    """.strip()
+    prompt = prompt.strip()
 
     return [
         {
