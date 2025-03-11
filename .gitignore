@@ -250,4 +250,4 @@ launch_scripts.sh
 launcher.sh
 open_singularity
 pytorch_24.10-py3-overlay.img
-action_anticipation/script_dump.sh
+action_anticipation/data_prep/script_dump.sh

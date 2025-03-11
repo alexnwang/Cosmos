@@ -160,6 +160,7 @@ class AutoRegressiveModel(torch.nn.Module):
     def build(
         model_config: ModelConfig = ModelConfig(),
         tokenizer_config: TokenizerConfig = None,
+        device: str = "cpu"
     ) -> "AutoRegressiveModel":
         """
         Build a AutoRegressiveModel instance by initializing and loading a model checkpoint.
@@ -219,12 +220,12 @@ class AutoRegressiveModel(torch.nn.Module):
         with misc.timer(f"loading checkpoint from {ckpt_path}"):
             if ckpt_path.endswith("safetensors"):
                 # Load with safetensors API
-                checkpoint = load_file(ckpt_path, device="cpu")
+                checkpoint = load_file(ckpt_path, device=device)
             else:
                 # The pytorch version
                 checkpoint = torch.load(
                     ckpt_path,
-                    map_location="cpu",
+                    map_location=device,
                     mmap=True,  # load the checkpoint in memory-mapped mode
                     weights_only=True,
                 )

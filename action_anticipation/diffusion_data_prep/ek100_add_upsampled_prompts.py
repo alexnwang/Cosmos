@@ -31,6 +31,8 @@ from cosmos1.models.diffusion.prompt_upsampler.video2world_prompt_upsampler_infe
 from nemo.collections.diffusion.models.model import DiT7BConfig
 from tqdm import tqdm
 from transformers import T5EncoderModel, T5TokenizerFast
+from transformers import AutoProcessor, LlavaForConditionalGeneration
+import transformers
 
 from cosmos1.utils import log
 import pandas as pd
@@ -92,29 +94,6 @@ def encode_for_batch(tokenizer, encoder, prompts: list[str], max_length=512, dev
         encoded_text[batch_id][lengths[batch_id] :] = 0
 
     return encoded_text
-
-def upsample_prompt(model, image, narration):
-    """Upsample a prompt using the given model."""
-    prompt = PROMPT_TEMPLATE.format(narration)
-    dialog = prepare_dialog(image, prompt)
-        
-    upsampled_prompts = run_chat_completion_vlm(
-        model, dialog, max_gen_len=400, temperature=0.01, top_p=0.9, logprobs=False
-    )
-    return upsampled_prompts
-
-def prepare_dialog(image: torch.Tensor, prompt: str) -> list[dict]:
-    image = torchvision.transforms.ToPILImage()(image)
-    image = resize_image(image, max_size=1024)
-    prompt = prompt.strip()
-
-    return [
-        {
-            "role": "user",
-            "content": "[IMG]\n" + prompt,
-            "images": [image],
-        }
-    ]
     
 def resize_image(image: Image.Image, max_size: int = 1024) -> Image.Image:
     """
@@ -127,10 +106,11 @@ def resize_image(image: Image.Image, max_size: int = 1024) -> Image.Image:
         image = image.resize((ceil(image_width / ratio), ceil(image_height / ratio)))
     return image
 
-PROMPT_TEMPLATE=("Your task is to transform a given image prompt and action into a refined and concise video description, no more than 150 words."
-                 "Focus only on the content of the provied image and do not describe any actions beyond the provided action: {}."
-                 "Do not use filler words, or descriptions on the style. Never mention things outside the video.")
-
+PROMPT_TEMPLATE=("Your task is to transform a given prompt into a refined and concise video description, no more than 150 words. "
+                 "Focus only on the content and do not describe any actions beyond the provided action: {}. "
+                 "Do not use filler words, or descriptions on the style or any extra comments. Never mention things outside the video. ")
+# PROMPT_TEMPLATE=("Your task is to transform a given prompt into a refined and concise video description, no more than 150 words."
+# "Focus only on the content, no filler words or descriptions on the style. Never mention things outside the video.")
 
 class UpsampleDataset(torch.utils.data.Dataset):
     def __init__(self, dataset_path, video_path):
@@ -166,8 +146,9 @@ class UpsampleDataset(torch.utils.data.Dataset):
         
         # use ffmpeg to extract the image to a temporary file based on rank and worker_id
         temp_file = os.path.join(os.path.expanduser("~"), f"temp{rank}_{worker_id}.jpg")
-        ffmpeg_command = f"ffmpeg -loglevel quiet -y -ss {start_time} -i {video_path} -vframes 1 {temp_file}"
+        ffmpeg_command = f"ffmpeg -loglevel quiet -nostdin -y -ss {start_time} -i {video_path} -vframes 1 {temp_file}"
         os.system(ffmpeg_command)
+        os.system('stty sane')
         
         # read image
         image = Image.open(temp_file)
@@ -177,65 +158,124 @@ class UpsampleDataset(torch.utils.data.Dataset):
         if os.path.exists(temp_file):
             os.remove(temp_file)
         
-        return {'images': image_tensor, 'example_names': prefix, "narrations": metadata['narration']}
+        if "upsampled_prompt" not in metadata:
+            upsampled_prompt = []
+        else:
+            upsampled_prompt = metadata['upsampled_prompt']
+        
+        return {'images': image_tensor, 'example_names': prefix, "narrations": metadata['narration'], "upsampled_prompt": upsampled_prompt}
+        
+def load_vlm_upsampler(device="cuda"):
+    model_id = "mistral-community/pixtral-12b"
+    processor = AutoProcessor.from_pretrained(model_id)
+    model = LlavaForConditionalGeneration.from_pretrained(model_id, device_map=device, torch_dtype=torch.bfloat16)
+    model = torch.compile(model)
+    return model, processor
+
+def process_chat_dialog(processor: transformers.PixtralProcessor, image: torch.Tensor, prompt: str):
+    image = torchvision.transforms.ToPILImage()(image)
+    image = resize_image(image, max_size=1024)
+    prompt = prompt
+
+    chat = [
+        {
+            "role": "user",
+            "content": "[IMG]\n" + prompt,
+        }
+    ]
+    return chat, image
+    
         
 def main(args):
-
     rank = int(os.environ.get("RANK", 0))
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
     print(f"Rank {rank} using device {device}, {torch.cuda.current_device()}")
-
-    # Initialize T5
-    tokenizer, text_encoder = init_t5("cpu") # load to CPU and adjust to device at inference
-
-    # Initialize Pixtral 12B
-    pixtral12b = create_vlm_prompt_upsampler(args.pixtral_checkpoint_dir).to("cpu")
     
-    torch.cuda.empty_cache()
-
-    # Constants
-    t5_embeding_max_length = 512
-    
+    # prepare dataset
     dataset = UpsampleDataset(args.dataset_path, args.video_path)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=4, prefetch_factor=1,
                                              sampler=torch.utils.data.DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False))
+    
+    # Initialize Pixtral
+    pixtral12b, processor = load_vlm_upsampler(device)
+    processor.tokenizer.add_special_tokens({'pad_token': '<pad>'})
+    # pixtral12b = create_vlm_prompt_upsampler(args.pixtral_checkpoint_dir, device=device)
 
-    for i, batch in enumerate(tqdm(dataloader, total=len(dataloader))):
+    for i, batch in enumerate(tqdm(dataloader, total=len(dataloader), desc="Upsampling prompts")):
         images = batch['images']
         example_names = batch['example_names']
         narrations = batch['narrations']
-
-        pixtral12b = pixtral12b.to(device)
-        upsampled_prompts = []
+        
+        # Skip processing if upsampled_prompt already exists
+        already_exists = []
+        for example_name in example_names:
+            with open(os.path.join(args.dataset_path, f"{example_name}.info.json"), "r") as json_file:
+                info = json.load(json_file)
+                if "upsampled_prompt" in info and info["upsampled_prompt"]:
+                    already_exists.append(True)
+                else:
+                    already_exists.append(False)
+        if all(already_exists):
+            print(f"Rank {rank} skipping batch {i} as all prompts are already upsampled.")
+            continue
+        
+        templates = []
+        images_ = []
         for image, narration in zip(images, narrations):
-            upsampled_prompts.append(upsample_prompt(pixtral12b, image, narration))
-        pixtral12b = pixtral12b.to("cpu")
+            template, image = process_chat_dialog(processor, image, PROMPT_TEMPLATE.format(narration))
+            templates.append(processor.apply_chat_template(template, add_generation_prompt=True))
+            images_.append([image])
+        inp = processor(text=templates, images=images_, return_tensors="pt", padding=True).to(device)
+        
+        ## decoding etc
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+            generations = pixtral12b.generate(**inp, max_new_tokens=400, temperature=0.01, top_p=0.9)
+        
+        # decode
+        # Remove input tokens from the generated text
+        generations_list = generations.tolist()
+        for idx, generation in enumerate(generations_list):
+            input_length = len(inp.input_ids[idx])
+            generations_list[idx] = generation[input_length:]
+        upsampled_prompts = processor.batch_decode(generations_list,  skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        
+        for j, (upsampled_prompt, example_name) in enumerate(zip(upsampled_prompts, example_names)):
+            # add upsampled_prompt to metadata file
+            with open(os.path.join(args.dataset_path, f"{example_name}.info.json"), "r") as json_file:
+                info= json.load(json_file)
+                info['upsampled_prompt'] = upsampled_prompt
+                print(f"Rank {rank} processed {example_name} with prompt \n {upsampled_prompt}")
+            with open(os.path.join(args.dataset_path, f"{example_name}.info.json"), "w") as json_file:
+                json.dump(info, json_file)
+    del pixtral12b
+    torch.cuda.empty_cache()
 
-        text_encoder = text_encoder.to(device)
-        encoded_texts = encode_for_batch(tokenizer, text_encoder, upsampled_prompts, device=device).cpu()
-        text_encoder = text_encoder.to("cpu")
-
+    tokenizer, text_encoder = init_t5(device)
+    t5_embeding_max_length = 512
+    # now, reiterate through the dataset and encode the new 'upsampled_prompt' to T5 embeddings
+    for i, batch in enumerate(tqdm(dataloader, total=len(dataloader), desc="encoding prompts with t5")):
+        images = batch['images']
+        example_names = batch['example_names']
+        narrations = batch['narrations']
+        upsampled_prompts = batch['upsampled_prompt']
+        
+        # Initialize T5
+        encoded_texts = encode_for_batch(tokenizer, text_encoder, upsampled_prompts, device=device)
+        
         for j, (encoded_text, example_name) in enumerate(zip(encoded_texts, example_names)):
-            
             # Pad T5 embedding to t5_embeding_max_length
             L, C_ = encoded_text.shape
             encoded_text = torch.zeros(t5_embeding_max_length, C_, dtype=torch.bfloat16)
             encoded_text[:L] = encoded_text
-            
+
             torch.save(encoded_text, os.path.join(args.dataset_path, f"{example_name}.upsampled_t5_text_embeddings.pth"))
             torch.save(
                 torch.ones(512, dtype=torch.bfloat16), os.path.join(args.dataset_path, f"{example_name}.upsampled_t5_text_mask.pth")
             )
-            
-            # add upsampled_prompt to metadata file
-            with open(os.path.join(args.dataset_path, f"{example_name}.info.json"), "r") as json_file:
-                info = json.load(json_file)
-                info['upsampled_prompt'] = upsampled_prompts[j]
-            with open(os.path.join(args.dataset_path, f"{example_name}.info.json"), "w") as json_file:
-                json.dump(info, json_file)
+    print(f"Rank {rank} finished processing dataset.")
 
 
 if __name__ == "__main__":

@@ -35,7 +35,7 @@ from cosmos1.utils.io import load_from_fileobj
 
 
 def create_vlm_prompt_upsampler(
-    checkpoint_dir: str, tokenizer_ckpt_path: str = "mistral-community/pixtral-12b"
+    checkpoint_dir: str, tokenizer_ckpt_path: str = "mistral-community/pixtral-12b", device="cpu"
 ) -> AutoRegressiveModel:
     """
     Load the fine-tuned pixtral model for SimReady.
@@ -56,6 +56,7 @@ def create_vlm_prompt_upsampler(
     return AutoRegressiveModel.build(
         model_config=model_config,
         tokenizer_config=tokenizer_config,
+        device=device
     ).to("cuda")
 
 
